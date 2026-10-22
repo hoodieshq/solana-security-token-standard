@@ -108,6 +108,12 @@ impl OperationsModule {
         let decimals = mint_account.decimals();
         drop(mint_account);
 
+        let token = TokenAccount::from_account_info(token_account)?;
+        if token.mint().ne(mint_info.key()) {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        drop(token);
+
         burn_checked(
             amount,
             decimals,
