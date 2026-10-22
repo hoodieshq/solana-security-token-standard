@@ -98,6 +98,7 @@ When using verification programs, the Security Token Program supports two verifi
 In introspection mode, the Security Token Program examines the Instructions Sysvar to verify that all required verification programs were called **before** the current instruction within the same transaction. In order to pass authorization via verification programs in introspection mode, the following conditions must be satisfied:
 
 - A corresponding instruction verification config exists with `cpi_mode` disabled and is passed to the Security Token Program.
+- The Security Token instruction must execute at the transaction's top level (stack height 1). Calls through CPI are rejected because nested calls share the top-level Instructions Sysvar index and could reuse one verifier block. Integrations that invoke the Security Token Program through CPI must use `cpi_mode = true`.
 - Verification programs must form a contiguous block immediately before the Security Token instruction, in config order, and complete successfully.
 - Each verification program call must include the same instruction data and target instruction discriminator prefix.
 - Each verification program call must include exactly its canonical operation accounts followed by its own configured extras.

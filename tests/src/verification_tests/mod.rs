@@ -1,3 +1,4 @@
+pub mod introspection_cpi_tests;
 #[cfg(test)]
 pub mod introspection_tests;
 

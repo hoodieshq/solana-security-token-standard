@@ -1335,6 +1335,7 @@ impl VerificationModule {
     /// Execute introspection-based verification
     /// Validates that required verification programs were called before the current instruction
     /// by examining the instructions sysvar and comparing their accounts and arguments with current instruction accounts
+    #[allow(unexpected_cfgs)] // The host compiler does not know Solana's custom target OS.
     fn execute_introspection_verification(
         config: &VerificationConfig,
         instructions_sysvar: &AccountInfo,
@@ -1342,6 +1343,18 @@ impl VerificationModule {
         routing_groups: &[RoutingGroup<'_>],
         target_instruction_data: &[u8],
     ) -> ProgramResult {
+        // Every CPI under one top-level instruction sees the same instructions-sysvar
+        // index. Reject nested calls so one verifier block cannot approve multiple operations.
+        #[cfg(target_os = "solana")]
+        {
+            const TRANSACTION_LEVEL_STACK_HEIGHT: u64 = 1;
+            // SAFETY: This runtime syscall takes no pointers and has no caller preconditions.
+            let stack_height = unsafe { pinocchio::syscalls::sol_get_stack_height() };
+            if stack_height != TRANSACTION_LEVEL_STACK_HEIGHT {
+                return Err(SecurityTokenError::VerificationProgramNotFound.into());
+            }
+        }
+
         // Get current instruction index
         let instructions = Instructions::try_from(instructions_sysvar)?;
         let current_index = instructions.load_current_index() as usize;
