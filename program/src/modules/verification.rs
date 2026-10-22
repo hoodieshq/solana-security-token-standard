@@ -1380,11 +1380,16 @@ impl VerificationModule {
                     .get_account_meta_at(index)
                     .map_err(|_| SecurityTokenError::AccountIntersectionMismatch)?;
                 let expected = if index < canonical_accounts.len() {
-                    canonical_accounts[index].key()
+                    canonical_accounts[index]
                 } else {
-                    group.extras[index - canonical_accounts.len()].key()
+                    &group.extras[index - canonical_accounts.len()]
                 };
-                if &observed.key != expected {
+                // Top-level instructions share transaction-wide privileges. Compare the
+                // effective flags, which may exceed the declared CPI privileges.
+                if &observed.key != expected.key()
+                    || observed.is_signer() != expected.is_signer()
+                    || observed.is_writable() != expected.is_writable()
+                {
                     return Err(SecurityTokenError::AccountIntersectionMismatch.into());
                 }
             }

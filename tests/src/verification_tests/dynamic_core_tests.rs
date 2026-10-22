@@ -55,6 +55,15 @@ fn introspection_verifier(
 ) -> ProgramResult {
     assert_eq!(accounts.len(), 5);
     assert_eq!(instruction_data[0], MINT_DISCRIMINATOR);
+    // The declared read-only extra inherits writable privileges from the transaction.
+    assert!(accounts[4].is_writable);
+    if accounts[4].key == accounts[2].key {
+        // Aliasing the writable destination promotes the extra without making it a signer.
+        assert!(!accounts[4].is_signer);
+    } else {
+        // The fee payer is also a signer even when declared as a non-signer extra.
+        assert!(accounts[4].is_signer);
+    }
     Ok(())
 }
 
@@ -130,7 +139,12 @@ fn nested_update_instruction(
     )
 }
 
-async fn run_dynamic_mint(cpi_mode: bool, break_block: bool, trailing_route: bool) {
+async fn run_dynamic_mint(
+    cpi_mode: bool,
+    break_block: bool,
+    trailing_route: bool,
+    alias_destination: bool,
+) {
     let verifier = Pubkey::new_unique();
     let mut program_test =
         ProgramTest::new("security_token_program", SECURITY_TOKEN_PROGRAM_ID, None);
@@ -155,14 +169,26 @@ async fn run_dynamic_mint(cpi_mode: bool, break_block: bool, trailing_route: boo
         find_mint_authority_pda(&mint.pubkey(), &context.payer.pubkey()).0
     );
     let config = find_verification_config_pda(mint.pubkey(), MINT_DISCRIMINATOR).0;
+    let destination = create_spl_account(&mut context, &mint, &owner).await;
+    let extra = if alias_destination {
+        destination
+    } else {
+        context.payer.pubkey()
+    };
 
-    let initialize = nested_initialize_instruction(
+    let initialize = nested_initialize_instruction_with_extra(
         context.payer.pubkey(),
         mint.pubkey(),
         mint_authority,
         config,
         verifier,
         cpi_mode,
+        VerificationAccountMeta {
+            discriminator: 0,
+            address_config: extra.to_bytes(),
+            is_signer: false,
+            is_writable: false,
+        },
     );
     assert_transaction_success(
         send_tx(
@@ -174,11 +200,10 @@ async fn run_dynamic_mint(cpi_mode: bool, break_block: bool, trailing_route: boo
         .await,
     );
 
-    let destination = create_spl_account(&mut context, &mint, &owner).await;
     let amount = 1_000u64;
     let mut remaining_accounts = vec![
         AccountMeta::new_readonly(verifier, false),
-        AccountMeta::new_readonly(context.payer.pubkey(), false),
+        AccountMeta::new_readonly(extra, false),
     ];
     if trailing_route {
         remaining_accounts.push(AccountMeta::new_readonly(context.payer.pubkey(), false));
@@ -205,7 +230,7 @@ async fn run_dynamic_mint(cpi_mode: bool, break_block: bool, trailing_route: boo
                 AccountMeta::new(mint.pubkey(), false),
                 AccountMeta::new(destination, false),
                 AccountMeta::new_readonly(spl_token_2022::ID, false),
-                AccountMeta::new_readonly(context.payer.pubkey(), false),
+                AccountMeta::new_readonly(extra, false),
             ],
             data: verifier_data,
         });
@@ -235,22 +260,27 @@ async fn run_dynamic_mint(cpi_mode: bool, break_block: bool, trailing_route: boo
 
 #[tokio::test]
 async fn dynamic_accounts_are_isolated_in_cpi_mode() {
-    run_dynamic_mint(true, false, false).await;
+    run_dynamic_mint(true, false, false, false).await;
 }
 
 #[tokio::test]
 async fn dynamic_accounts_require_exact_introspection_block() {
-    run_dynamic_mint(false, false, false).await;
+    run_dynamic_mint(false, false, false, false).await;
+}
+
+#[tokio::test]
+async fn introspection_accepts_canonical_alias_privilege_promotion() {
+    run_dynamic_mint(false, false, false, true).await;
 }
 
 #[tokio::test]
 async fn dynamic_accounts_reject_trailing_routing_accounts() {
-    run_dynamic_mint(true, false, true).await;
+    run_dynamic_mint(true, false, true, false).await;
 }
 
 #[tokio::test]
 async fn introspection_rejects_noncontiguous_verifier_block() {
-    run_dynamic_mint(false, true, false).await;
+    run_dynamic_mint(false, true, false, false).await;
 }
 
 #[tokio::test]

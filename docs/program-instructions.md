@@ -124,7 +124,7 @@ For instructions that support authorization via verification programs:
 | --- | ------------------- | ------ | -------- | ----------------------------------------------------------------------------- |
 | 0   | mint                |        |          | The mint account being operated on                                            |
 | 1   | verification_config |        |          | [VerificationConfig](#verificationconfig) PDA for this instruction type       |
-| 2   | instructions_sysvar |        |          | Instructions Sysvar (introspection mode) or program_id placeholder (CPI mode) |
+| 2   | instructions_sysvar |        |          | Instructions Sysvar. Required in both modes; its contents are consulted only in introspection mode. |
 
 #### Initial Mint Authority
 
@@ -1255,6 +1255,8 @@ The discriminator byte matches the Security Token instruction being verified, fo
 ### Account Format
 
 Verification programs receive the canonical operation accounts followed by only their own configured extras. Account matching is exact; unrelated trailing accounts are rejected.
+
+In CPI mode, Core requests the canonical operation privileges and configured extra-account privileges for each verifier invocation. In introspection mode, Solana combines signer and writable privileges for each public key across the transaction. Core compares the verifier instruction's account keys and effective flags with its runtime accounts. An extra declared read-only or non-signer can therefore be writable or a signer when it also serves as the fee payer or another privileged account in the transaction. Verifiers must account for this difference; use CPI mode when privileges need to be limited at the invocation boundary.
 
 ### Expected Behavior
 
