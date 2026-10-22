@@ -39,10 +39,10 @@ pub fn burn_checked(
     };
 
     match permissioned_burn_state {
-        // Legacy mints do not have the extension. SSTS cannot clear a configured
-        // Permissioned Burn authority, but if it is cleared externally, Token-2022
-        // already permits native burns. Falling back to BurnChecked keeps SSTS
-        // burn, split, and convert usable because there is no recovery path.
+        // Legacy mints do not have the extension. Token-2022 v11 supports clearing
+        // Permissioned Burn authority, but SSTS exposes no operation to sign that
+        // change for its PDA. Once cleared, Token-2022 permits native burns;
+        // falling back to BurnChecked keeps SSTS burn, split, and convert usable.
         PermissionedBurnState::NotPresent | PermissionedBurnState::PresentWithoutAuthority => {
             BurnChecked {
                 mint,

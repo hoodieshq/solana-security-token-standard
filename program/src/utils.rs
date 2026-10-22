@@ -263,7 +263,9 @@ where
 }
 
 /// Calculate mint account size with extensions using pinocchio constants
-pub fn calculate_mint_size_with_extensions(extensions: &[ExtensionType]) -> usize {
+pub fn calculate_mint_size_with_extensions(
+    extensions: &[ExtensionType],
+) -> Result<usize, ProgramError> {
     // Base mint size
     let base_size = Mint::BASE_LEN;
 
@@ -274,25 +276,22 @@ pub fn calculate_mint_size_with_extensions(extensions: &[ExtensionType]) -> usiz
     let account_type_size = EXTENSION_START_OFFSET;
 
     // Calculate extensions size
-    let extensions_size: usize = extensions
-        .iter()
-        .map(|ext_type| {
-            // Each extension has: type (2 bytes) + length (2 bytes) + data
-            let extension_data_size = match ext_type {
-                ExtensionType::PermanentDelegate => PermanentDelegate::LEN,
-                ExtensionType::TransferHook => TransferHook::LEN,
-                ExtensionType::Pausable => Pausable::LEN,
-                ExtensionType::MetadataPointer => MetadataPointer::LEN,
-                ExtensionType::ScaledUiAmount => ScaledUiAmountConfig::LEN,
-                ExtensionType::DefaultAccountState => DefaultAccountStateExtension::LEN,
-                ExtensionType::PermissionedBurn => PermissionedBurnConfig::LEN,
-                _ => unreachable!(),
-            };
-            EXTENSION_TYPE_LEN + EXTENSION_LENGTH_LEN + extension_data_size
-        })
-        .sum();
+    let extensions_size: usize = extensions.iter().try_fold(0, |size, ext_type| {
+        // Each extension has: type (2 bytes) + length (2 bytes) + data
+        let extension_data_size = match ext_type {
+            ExtensionType::PermanentDelegate => PermanentDelegate::LEN,
+            ExtensionType::TransferHook => TransferHook::LEN,
+            ExtensionType::Pausable => Pausable::LEN,
+            ExtensionType::MetadataPointer => MetadataPointer::LEN,
+            ExtensionType::ScaledUiAmount => ScaledUiAmountConfig::LEN,
+            ExtensionType::DefaultAccountState => DefaultAccountStateExtension::LEN,
+            ExtensionType::PermissionedBurn => PermissionedBurnConfig::LEN,
+            _ => return Err(ProgramError::InvalidArgument),
+        };
+        Ok(size + EXTENSION_TYPE_LEN + EXTENSION_LENGTH_LEN + extension_data_size)
+    })?;
 
-    base_size + padding_size + account_type_size + extensions_size
+    Ok(base_size + padding_size + account_type_size + extensions_size)
 }
 
 /// Calculate TLV size for TokenMetadata (equivalent to TokenMetadata::tlv_size_of)
@@ -336,4 +335,25 @@ pub fn find_associated_token_address(
         &[wallet.as_ref(), token_program.as_ref(), token_mint.as_ref()],
         &pinocchio_associated_token_account::ID,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_extension_sizing_returns_error() {
+        assert_eq!(
+            calculate_mint_size_with_extensions(&[ExtensionType::NonTransferable]),
+            Err(ProgramError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn permissioned_burn_mint_size_matches_tlv_layout() {
+        assert_eq!(
+            calculate_mint_size_with_extensions(&[ExtensionType::PermissionedBurn]),
+            Ok(202)
+        );
+    }
 }

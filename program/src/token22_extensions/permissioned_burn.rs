@@ -10,8 +10,8 @@ use pinocchio::{
 use pinocchio_token_2022::state::Mint;
 
 use crate::token22_extensions::{
-    write_bytes, BaseState, Extension, ExtensionType, EXTENSIONS_PADDING, EXTENSION_LENGTH_LEN,
-    EXTENSION_START_OFFSET, EXTENSION_TYPE_LEN, UNINIT_BYTE,
+    BaseState, Extension, ExtensionType, EXTENSIONS_PADDING, EXTENSION_LENGTH_LEN,
+    EXTENSION_START_OFFSET, EXTENSION_TYPE_LEN,
 };
 
 // The instruction discriminator for the Token-2022 `PermissionedBurn` extension.
@@ -47,6 +47,8 @@ pub enum PermissionedBurnState {
     Malformed,
 }
 
+/// Read the Permissioned Burn extension from mint data.
+/// The caller must first validate that the mint account is owned by Token-2022.
 pub fn get_permissioned_burn_state(mint_data: &[u8]) -> PermissionedBurnState {
     let extension_offset = Mint::BASE_LEN + EXTENSIONS_PADDING + EXTENSION_START_OFFSET;
     // No extensions
@@ -69,7 +71,10 @@ pub fn get_permissioned_burn_state(mint_data: &[u8]) -> PermissionedBurnState {
         let extension_type = u16::from_le_bytes([header[0], header[1]]);
         let extension_len = u16::from_le_bytes([header[2], header[3]]) as usize;
 
-        if extension_type == ExtensionType::Uninitialized as u16 && extension_len == 0 {
+        if extension_type == ExtensionType::Uninitialized as u16 {
+            if extension_len != 0 {
+                return PermissionedBurnState::Malformed;
+            }
             break;
         }
 
@@ -126,19 +131,16 @@ impl InitializePermissionedBurn<'_> {
         // - [0]: Token-2022 instruction discriminator (46 = Permissioned Burn)
         // - [1]: Permissioned Burn sub-instruction (0 = Initialize)
         // - [2..34]: permissioned burn authority (32-byte Pubkey)
-        let mut instruction_data = [UNINIT_BYTE; 34];
-        write_bytes(
-            &mut instruction_data[..2],
-            &[
-                PERMISSIONED_BURN_INSTRUCTION,
-                PermissionedBurnIx::Initialize as u8,
-            ],
-        );
-        write_bytes(&mut instruction_data[2..], &self.authority);
+        let mut instruction_data = [0u8; 34];
+        instruction_data[..2].copy_from_slice(&[
+            PERMISSIONED_BURN_INSTRUCTION,
+            PermissionedBurnIx::Initialize as u8,
+        ]);
+        instruction_data[2..].copy_from_slice(&self.authority);
         let instruction = Instruction {
             program_id: &pinocchio_token_2022::ID,
             accounts: &account_metas,
-            data: unsafe { core::slice::from_raw_parts(instruction_data.as_ptr() as _, 34) },
+            data: &instruction_data,
         };
 
         invoke_signed(&instruction, &[self.mint], signers)
@@ -193,8 +195,6 @@ impl PermissionedBurnChecked<'_> {
         // - [2..10]: amount as a little-endian `u64`
         // - [10]: expected mint decimals
 
-        // TODO: Benchmark a `MaybeUninit` implementation and use it only if it
-        // provides a measurable CU reduction.
         let mut instruction_data = [0u8; 11];
         instruction_data[0] = PERMISSIONED_BURN_INSTRUCTION;
         instruction_data[1] = PermissionedBurnIx::BurnChecked as u8;
@@ -359,6 +359,8 @@ mod tests {
             vec![28, 0, 32, 0, 1],
             entry(28, &[1; 31]),
             [entry(28, &[1; 32]), entry(28, &[2; 32])].concat(),
+            entry(0, &[1]),
+            [entry(28, &[1; 32]), entry(0, &[1])].concat(),
         ];
         for tlv in cases {
             assert_eq!(
@@ -366,5 +368,15 @@ mod tests {
                 PermissionedBurnState::Malformed
             );
         }
+    }
+
+    #[test]
+    fn parser_accepts_zero_length_uninitialized_padding() {
+        let authority = [9; 32];
+        let tlv = [entry(28, &authority), vec![0; 12]].concat();
+        assert_eq!(
+            get_permissioned_burn_state(&mint_with_tlv(&tlv)),
+            PermissionedBurnState::PresentWithAuthority(authority)
+        );
     }
 }

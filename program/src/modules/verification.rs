@@ -163,7 +163,7 @@ impl VerificationModule {
         let mint_size = if ext_count == 0 {
             Mint::BASE_LEN
         } else {
-            utils::calculate_mint_size_with_extensions(&extensions_buf[..ext_count])
+            utils::calculate_mint_size_with_extensions(&extensions_buf[..ext_count])?
         };
 
         let metadata_size = if let Some(metadata) = &metadata_opt {

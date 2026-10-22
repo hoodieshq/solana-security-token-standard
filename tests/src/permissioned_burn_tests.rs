@@ -11,16 +11,19 @@ use solana_sdk::{
     account::AccountSharedData,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
+    rent::Rent,
     signature::{Keypair, Signer},
 };
+use solana_system_interface::instruction as system_instruction;
 
 use crate::helpers::{
-    assert_security_token_error, assert_transaction_failure, assert_transaction_success,
-    create_dummy_verification_from_instruction, create_permissioned_burn_mint, create_spl_account,
-    create_verification_config, find_mint_authority_pda, find_mint_freeze_authority_pda,
-    find_permanent_delegate_pda, get_account, get_default_verification_programs, get_mint_state,
-    get_token_account_state, initialize_mint, initialize_mint_verification_and_mint_to_account,
-    send_tx, start_with_context, start_with_token_2022_v11_context,
+    assert_instruction_error, assert_security_token_error, assert_transaction_failure,
+    assert_transaction_success, create_dummy_verification_from_instruction,
+    create_permissioned_burn_mint, create_spl_account, create_verification_config,
+    find_mint_authority_pda, find_mint_freeze_authority_pda, find_permanent_delegate_pda,
+    get_account, get_default_verification_programs, get_mint_state, get_token_account_state,
+    initialize_mint, initialize_mint_verification_and_mint_to_account, send_tx, start_with_context,
+    start_with_token_2022_v11_context,
 };
 
 const AMOUNT: u64 = 1_000_000;
@@ -120,6 +123,30 @@ fn permissioned_burn_checked_instruction(
             AccountMeta::new_readonly(authority, true),
         ],
         data: data.to_vec(),
+    }
+}
+
+fn set_permissioned_burn_authority_instruction(
+    mint: Pubkey,
+    authority: Pubkey,
+    new_authority: Option<Pubkey>,
+) -> Instruction {
+    // Token-2022 v11: SetAuthority = 6, AuthorityType::PermissionedBurn = 17.
+    // The pinned v9 Rust interface does not expose the latter variant.
+    let mut data = vec![6, 17];
+    if let Some(new_authority) = new_authority {
+        data.push(1);
+        data.extend_from_slice(new_authority.as_ref());
+    } else {
+        data.push(0);
+    }
+    Instruction {
+        program_id: spl_token_2022::ID,
+        accounts: vec![
+            AccountMeta::new(mint, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data,
     }
 }
 
@@ -281,6 +308,159 @@ async fn ssts_burn_rejects_mismatched_permissioned_burn_authority() {
         SecurityTokenProgramError::PermissionedBurnAuthorityMismatch,
     );
     assert_supply_and_balance(&mut context, mint.pubkey(), token_account, AMOUNT).await;
+}
+
+#[tokio::test]
+async fn ssts_burn_rejects_token_account_from_another_mint() {
+    let (mut context, mint, token_account, burn_config, permanent_delegate) =
+        setup_protected_mint().await;
+    let other_mint = Keypair::new();
+    let (other_mint_authority, _) =
+        create_permissioned_burn_mint(&mut context, &other_mint, None, 6).await;
+    let payer = context.payer.insecure_clone();
+    let other_token_account = create_spl_account(&mut context, &other_mint, &payer).await;
+    initialize_mint_verification_and_mint_to_account(
+        &other_mint,
+        &mut context,
+        other_mint_authority,
+        other_token_account,
+        AMOUNT,
+    )
+    .await;
+
+    let result = send_tx(
+        &context.banks_client,
+        ssts_burn_instructions(
+            mint.pubkey(),
+            other_token_account,
+            burn_config,
+            permanent_delegate,
+            1,
+        ),
+        &context.payer.pubkey(),
+        vec![&context.payer],
+    )
+    .await;
+    assert_supply_and_balance(&mut context, mint.pubkey(), token_account, AMOUNT).await;
+    assert_supply_and_balance(
+        &mut context,
+        other_mint.pubkey(),
+        other_token_account,
+        AMOUNT,
+    )
+    .await;
+    assert_instruction_error(result, "InvalidInstructionData");
+}
+
+#[tokio::test]
+async fn token_2022_v11_can_rotate_and_clear_permissioned_burn_authority() {
+    let mut context = start_with_token_2022_v11_context().await;
+    let mint = Keypair::new();
+    let payer = context.payer.insecure_clone();
+    let new_authority = Keypair::new();
+    // Native Token-2022 mint with one 32-byte extension, controlled by a keypair.
+    // SSTS mints instead use a PDA whose signature only Core can provide.
+    let mint_size = 202;
+    let initialize_permissioned_burn = Instruction {
+        program_id: spl_token_2022::ID,
+        accounts: vec![AccountMeta::new(mint.pubkey(), false)],
+        data: [vec![46, 0], payer.pubkey().to_bytes().to_vec()].concat(),
+    };
+    assert_transaction_success(
+        send_tx(
+            &context.banks_client,
+            vec![
+                system_instruction::create_account(
+                    &payer.pubkey(),
+                    &mint.pubkey(),
+                    Rent::default().minimum_balance(mint_size),
+                    mint_size as u64,
+                    &spl_token_2022::ID,
+                ),
+                initialize_permissioned_burn,
+                spl_token_2022::instruction::initialize_mint2(
+                    &spl_token_2022::ID,
+                    &mint.pubkey(),
+                    &payer.pubkey(),
+                    None,
+                    6,
+                )
+                .unwrap(),
+            ],
+            &payer.pubkey(),
+            vec![&payer, &mint],
+        )
+        .await,
+    );
+    let token_account = create_spl_account(&mut context, &mint, &payer).await;
+    let mint_tokens = spl_token_2022::instruction::mint_to_checked(
+        &spl_token_2022::ID,
+        &mint.pubkey(),
+        &token_account,
+        &payer.pubkey(),
+        &[],
+        AMOUNT,
+        6,
+    )
+    .unwrap();
+    let rotate = set_permissioned_burn_authority_instruction(
+        mint.pubkey(),
+        payer.pubkey(),
+        Some(new_authority.pubkey()),
+    );
+    assert_transaction_success(
+        send_tx(
+            &context.banks_client,
+            vec![mint_tokens, rotate],
+            &payer.pubkey(),
+            vec![&payer],
+        )
+        .await,
+    );
+    let mint_account = get_account(&mut context, mint.pubkey()).await.unwrap();
+    assert_eq!(
+        permissioned_burn_authority(&mint_account.data),
+        Some(new_authority.pubkey())
+    );
+
+    let unauthorized_clear =
+        set_permissioned_burn_authority_instruction(mint.pubkey(), payer.pubkey(), None);
+    assert_transaction_failure(
+        send_tx(
+            &context.banks_client,
+            vec![unauthorized_clear],
+            &payer.pubkey(),
+            vec![&payer],
+        )
+        .await,
+    );
+    let clear =
+        set_permissioned_burn_authority_instruction(mint.pubkey(), new_authority.pubkey(), None);
+    let burn = spl_token_2022::instruction::burn_checked(
+        &spl_token_2022::ID,
+        &token_account,
+        &mint.pubkey(),
+        &payer.pubkey(),
+        &[],
+        1,
+        6,
+    )
+    .unwrap();
+    assert_transaction_success(
+        send_tx(
+            &context.banks_client,
+            vec![clear, burn],
+            &payer.pubkey(),
+            vec![&payer, &new_authority],
+        )
+        .await,
+    );
+    let mint_account = get_account(&mut context, mint.pubkey()).await.unwrap();
+    assert_eq!(
+        permissioned_burn_entry(&mint_account.data).unwrap().1,
+        &[0; 32]
+    );
+    assert_supply_and_balance(&mut context, mint.pubkey(), token_account, AMOUNT - 1).await;
 }
 
 #[tokio::test]
