@@ -5,18 +5,14 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
+use crate::generated::types::VerificationProgramConfig;
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
-use solana_pubkey::Pubkey;
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InitializeVerificationConfigArgs {
     pub instruction_discriminator: u8,
     pub cpi_mode: bool,
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_with::As::<Vec<serde_with::DisplayFromStr>>")
-    )]
-    pub program_addresses: Vec<Pubkey>,
+    pub programs: Vec<VerificationProgramConfig>,
 }
